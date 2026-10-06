@@ -8,6 +8,7 @@ import net.minecraft.client.render.RenderTickCounter;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.projectile.ProjectileUtil;
 import net.minecraft.item.Items;
+import net.minecraft.text.Text;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
@@ -16,39 +17,48 @@ import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 public class PearlIndicatorClient implements ClientModInitializer {
 
+    public static final Logger LOGGER = LoggerFactory.getLogger("pearlindicator");
+
     @Override
     public void onInitializeClient() {
-        HudRenderCallback.EVENT.register(this::onRenderHud);
-    }
+        LOGGER.info("[PearlIndicator] Мод загружен и зарегистрирован для Minecraft 1.21.4!");
 
-    private void onRenderHud(DrawContext context, RenderTickCounter tickCounter) {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client.player == null || client.world == null) return;
+        HudRenderCallback.EVENT.register(new HudRenderCallback() {
+            @Override
+            public void onHudRender(DrawContext drawContext, RenderTickCounter renderTickCounter) {
+                MinecraftClient client = MinecraftClient.getInstance();
+                if (client.player == null || client.world == null) {
+                    return;
+                }
 
-        // Проверяем, держит ли игрок эндер-жемчуг в руках
-        boolean holdingPearl = client.player.getMainHandStack().isOf(Items.ENDER_PEARL)
-                || client.player.getOffHandStack().isOf(Items.ENDER_PEARL);
+                // Проверяем, держит ли игрок жемчуг эндера в руках
+                boolean holdingPearl = client.player.getMainHandStack().isOf(Items.ENDER_PEARL)
+                        || client.player.getOffHandStack().isOf(Items.ENDER_PEARL);
 
-        if (!holdingPearl) return;
+                if (!holdingPearl) {
+                    return;
+                }
 
-        // Проверяем траекторию броска
-        boolean hitsEntity = simulatePearl(client);
+                boolean hitsEntity = simulatePearl(client);
 
-        String text = hitsEntity ? "НЕЛЬЗЯ!" : "МОЖНО!";
-        int color = hitsEntity ? 0xFFFF0000 : 0xFF00FF00; // Красный или Зеленый
+                String text = hitsEntity ? "НЕЛЬЗЯ!" : "МОЖНО!";
+                int color = hitsEntity ? 0xFFFF2222 : 0xFF22FF22;
 
-        int screenWidth = client.getWindow().getScaledWidth();
-        int screenHeight = client.getWindow().getScaledHeight();
+                int screenWidth = drawContext.getScaledWindowWidth();
+                int screenHeight = drawContext.getScaledWindowHeight();
 
-        // Отображение текста под прицелом
-        int textWidth = client.textRenderer.getWidth(text);
-        int x = (screenWidth - textWidth) / 2;
-        int y = (screenHeight / 2) + 12;
+                int textWidth = client.textRenderer.getWidth(text);
+                int x = (screenWidth - textWidth) / 2;
+                int y = (screenHeight / 2) + 14;
 
-        context.drawTextWithShadow(client.textRenderer, text, x, y, color);
+                drawContext.drawTextWithShadow(client.textRenderer, Text.literal(text), x, y, color);
+            }
+        });
     }
 
     private boolean simulatePearl(MinecraftClient client) {
@@ -59,17 +69,14 @@ public class PearlIndicatorClient implements ClientModInitializer {
 
         float pitch = shooter.getPitch();
         float yaw = shooter.getYaw();
-        float roll = 0.0F;
 
         float f = -MathHelper.sin(yaw * 0.017453292F) * MathHelper.cos(pitch * 0.017453292F);
-        float g = -MathHelper.sin((pitch + roll) * 0.017453292F);
+        float g = -MathHelper.sin(pitch * 0.017453292F);
         float h = MathHelper.cos(yaw * 0.017453292F) * MathHelper.cos(pitch * 0.017453292F);
 
         Vec3d velocity = new Vec3d(f, g, h).normalize().multiply(1.5D);
 
-        int maxTicks = 100;
-
-        for (int i = 0; i < maxTicks; i++) {
+        for (int i = 0; i < 100; i++) {
             Vec3d nextPos = pos.add(velocity);
 
             BlockHitResult blockHit = world.raycast(new RaycastContext(

@@ -3,10 +3,8 @@
   "id": "pearlindicator",
   "version": "1.0.0",
   "name": "Pearl Indicator",
-  "description": "Показывает МОЖНО / НЕЛЬЗЯ при прицеливании эндер-жемчугом",
-  "authors": [
-    "Developer"
-  ],
+  "description": "Показывает МОЖНО / НЕЛЬЗЯ при прицеливании жемчугом края",
+  "authors": ["Developer"],
   "contact": {},
   "license": "MIT",
   "environment": "client",

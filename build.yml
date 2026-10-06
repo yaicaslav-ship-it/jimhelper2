@@ -22,28 +22,24 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      - name: Validate Gradle wrapper
-        uses: gradle/actions/wrapper-validation@v4
-
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
-
-      - name: Make gradlew executable
-        run: chmod +x gradlew || true
+        with:
+          gradle-version: '8.11.1'
 
       - name: Build Mod with Gradle
-        run: ./gradlew build
+        run: gradle remapJar --no-daemon
 
-      - name: Upload Mod Jar Artifact
+      - name: Upload Remapped Mod Jar
         uses: actions/upload-artifact@v4
         with:
           name: pearl-indicator-jar
-          path: build/libs/*.jar
+          path: build/libs/pearlindicator-1.0.0.jar
 
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/libs/*.jar
+          files: build/libs/pearlindicator-1.0.0.jar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
