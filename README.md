@@ -1,0 +1,1 @@
+# Pearl Indicator Mod for Minecraft 1.21.4 (Fabric)\n\nClient mod that shows green 'МОЖНО!' or red 'НЕЛЬЗЯ!' when aiming with Ender Pearl.\n

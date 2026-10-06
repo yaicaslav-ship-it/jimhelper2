@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "pearlindicator",
+  "version": "1.0.0",
+  "name": "Pearl Indicator",
+  "description": "Показывает МОЖНО / НЕЛЬЗЯ при прицеливании эндер-жемчугом",
+  "authors": [
+    "Developer"
+  ],
+  "contact": {},
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "net.example.pearlindicator.PearlIndicatorClient"
+    ]
+  },
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.4",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
