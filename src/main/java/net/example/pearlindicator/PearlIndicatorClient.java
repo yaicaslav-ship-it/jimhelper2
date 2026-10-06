@@ -4,12 +4,13 @@ import net.fabricmc.api.ClientModInitializer;
 import net.minecraft.block.BlockState;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
-import net.minecraft.entity.Entity;
+import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.item.Items;
 import net.minecraft.text.Text;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
@@ -17,11 +18,6 @@ import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
 
 public class PearlIndicatorClient implements ClientModInitializer {
-
-    // Максимальная дистанция для клипа в стену (в блоках)
-    private static final double MAX_PHASE_DISTANCE = 4.2D;
-    // Допустимая зона стыка (18% от края грани блока)
-    private static final double SEAM_THRESHOLD = 0.18D;
 
     @Override
     public void onInitializeClient() {
@@ -36,10 +32,10 @@ public class PearlIndicatorClient implements ClientModInitializer {
 
         if (!hasPearl) return;
 
-        boolean canClip = checkCanClipIntoWall(client);
+        boolean canEnter = checkPlayerWallPhase(client);
 
-        String message = canClip ? "МОЖНО!" : "НЕЛЬЗЯ!";
-        int color = canClip ? 0xFF22FF22 : 0xFFFF2222;
+        String message = canEnter ? "МОЖНО!" : "НЕЛЬЗЯ!";
+        int color = canEnter ? 0xFF22FF22 : 0xFFFF2222;
 
         int screenWidth = client.getWindow().getScaledWidth();
         int screenHeight = client.getWindow().getScaledHeight();
@@ -51,12 +47,14 @@ public class PearlIndicatorClient implements ClientModInitializer {
         context.drawTextWithShadow(client.textRenderer, Text.literal(message), x, y, color);
     }
 
-    private static boolean checkCanClipIntoWall(MinecraftClient client) {
-        Entity player = client.player;
+    private static boolean checkPlayerWallPhase(MinecraftClient client) {
+        PlayerEntity player = client.player;
         World world = client.world;
         if (player == null || world == null) return false;
 
-        Vec3d pos = player.getCameraPosVec(1.0F).subtract(0.0, 0.1, 0.0);
+        // Позиция камеры броска
+        Vec3d eyePos = player.getCameraPosVec(1.0F);
+        Vec3d throwPos = eyePos.subtract(0.0, 0.1, 0.0);
 
         float pitch = player.getPitch();
         float yaw = player.getYaw();
@@ -71,12 +69,13 @@ public class PearlIndicatorClient implements ClientModInitializer {
         Vec3d velocity = new Vec3d(xDir, yDir, zDir).normalize().multiply(1.5D);
 
         BlockHitResult finalHit = null;
+        Vec3d simPos = throwPos;
 
-        for (int step = 0; step < 100; step++) {
-            Vec3d nextPos = pos.add(velocity);
+        for (int step = 0; step < 80; step++) {
+            Vec3d nextPos = simPos.add(velocity);
 
             BlockHitResult hit = world.raycast(new RaycastContext(
-                    pos,
+                    simPos,
                     nextPos,
                     RaycastContext.ShapeType.COLLIDER,
                     RaycastContext.FluidHandling.NONE,
@@ -88,7 +87,7 @@ public class PearlIndicatorClient implements ClientModInitializer {
                 break;
             }
 
-            pos = nextPos;
+            simPos = nextPos;
             velocity = velocity.multiply(0.99D).subtract(0.0, 0.03D, 0.0);
         }
 
@@ -96,80 +95,91 @@ public class PearlIndicatorClient implements ClientModInitializer {
             return false;
         }
 
-        Vec3d hitVec = finalHit.getPos();
-        BlockPos hitPos = finalHit.getBlockPos();
-        Direction side = finalHit.getSide();
+        Vec3d hitPos = finalHit.getPos();
+        BlockPos targetBlock = finalHit.getBlockPos();
+        Direction hitSide = finalHit.getSide();
 
-        // 1. Проверка дистанции: далеко от стены клипнуться невозможно
-        if (player.getEyePos().distanceTo(hitVec) > MAX_PHASE_DISTANCE) {
+        // 1. УЧЁТ ПОЗИЦИИ ИГРОКА:
+        // Клип в блоки невозможен, если игрок не стоит в упор к стене.
+        // Расстояние от горизонтального центра хитбокса игрока до точки удара должно быть <= 1.25 блока
+        double horizontalDistSq = MathHelper.square(player.getX() - hitPos.x) + MathHelper.square(player.getZ() - hitPos.z);
+        if (horizontalDistSq > 1.6D) {
             return false;
         }
 
-        BlockState hitState = world.getBlockState(hitPos);
+        // Вертикальное расстояние от ног игрока до точки удара
+        double relativeHitY = hitPos.y - player.getY();
+        // Удар должен приходиться примерно в диапазон тела игрока (от пола до потолка над головой)
+        if (relativeHitY < -0.2D || relativeHitY > 2.5D) {
+            return false;
+        }
+
+        BlockState hitState = world.getBlockState(targetBlock);
         if (hitState.isAir() || !hitState.getFluidState().isEmpty()) {
             return false;
         }
 
-        // 2. Неполные блоки (люки, плиты, ступеньки) — клипают всегда
-        if (!hitState.isOpaqueFullCube() && hitState.blocksMovement()) {
+        // 2. Проверяем, застрянет ли хитбокс игрока в блоках после телепортации
+        // Высота хитбокса игрока (1.5 при шифте, 1.8 стоя)
+        double playerHeight = player.isSneaking() ? 1.5D : 1.8D;
+        double halfWidth = 0.3D;
+
+        // Позиция, куда ванильный сервер приземлит игрока (со сдвигом от нормали грани)
+        Vec3d landingPos = hitPos.add(Vec3d.of(hitSide.getVector()).multiply(0.05D));
+        // Низ хитбокса после тп
+        double landingBottomY = (hitSide == Direction.UP) ? hitPos.y : (hitPos.y - (playerHeight * 0.8D));
+
+        Box landingBox = new Box(
+                landingPos.x - halfWidth, landingBottomY, landingPos.z - halfWidth,
+                landingPos.x + halfWidth, landingBottomY + playerHeight, landingPos.z + halfWidth
+        );
+
+        // Считаем, сколько твёрдых блоков перекрывает голова/тело игрока в точке приземления
+        int solidCollisions = 0;
+        BlockPos minB = BlockPos.ofFloored(landingBox.minX + 0.01, landingBox.minY + 0.01, landingBox.minZ + 0.01);
+        BlockPos maxB = BlockPos.ofFloored(landingBox.maxX - 0.01, landingBox.maxY - 0.01, landingBox.maxZ - 0.01);
+
+        for (int x = minB.getX(); x <= maxB.getX(); x++) {
+            for (int y = minB.getY(); y <= maxB.getY(); y++) {
+                for (int z = minB.getZ(); z <= maxB.getZ(); z++) {
+                    BlockPos p = new BlockPos(x, y, z);
+                    BlockState s = world.getBlockState(p);
+                    if (s.isOpaqueFullCube() && s.blocksMovement()) {
+                        solidCollisions++;
+                    }
+                }
+            }
+        }
+
+        // Дроби координат точки удара внутри блока [0.0 ... 1.0]
+        double fracY = hitPos.y - Math.floor(hitPos.y);
+
+        // 3. Условия успешного захода:
+        // Ситуация со скриншота 1: бросок в верхний край стыка потолка (fracY > 0.80) при наличии потолка сверху
+        boolean isCeilingSeam = hitSide.getAxis().isHorizontal() && fracY >= 0.80D && isSolid(world, targetBlock.up());
+        
+        // Бросок в потолок вплотную к стене
+        boolean isCeilingCorner = (hitSide == Direction.DOWN) && (
+                isSolid(world, targetBlock.north()) || isSolid(world, targetBlock.south()) ||
+                isSolid(world, targetBlock.west()) || isSolid(world, targetBlock.east())
+        );
+
+        // Если при телепортации модель игрока врезается в верхний блок потолка или застревает в стыке
+        if (isCeilingSeam || isCeilingCorner) {
             return true;
         }
 
-        // Расчёт координат точки удара внутри блока [0.0 ... 1.0]
-        double fracX = hitVec.x - Math.floor(hitVec.x);
-        double fracY = hitVec.y - Math.floor(hitVec.y);
-        double fracZ = hitVec.z - Math.floor(hitVec.z);
-
-        double edgeX = Math.min(fracX, 1.0 - fracX);
-        double edgeY = Math.min(fracY, 1.0 - fracY);
-        double edgeZ = Math.min(fracZ, 1.0 - fracZ);
-
-        // 3. Попадание в вертикальную стену (NORTH, SOUTH, EAST, WEST)
-        if (side.getAxis().isHorizontal()) {
-            // Верхний стык (под потолком) — классический фазинг (скриншот 1)
-            if (fracY >= (1.0 - SEAM_THRESHOLD) && isSolidBlock(world, hitPos.up())) {
-                return true;
-            }
-
-            // Нижний стык (у пола)
-            if (fracY <= SEAM_THRESHOLD && isSolidBlock(world, hitPos.down())) {
-                return true;
-            }
-
-            // Внутренние углы между двумя стенами
-            if (side == Direction.NORTH || side == Direction.SOUTH) {
-                if (fracX <= SEAM_THRESHOLD && isSolidBlock(world, hitPos.west())) return true;
-                if (fracX >= (1.0 - SEAM_THRESHOLD) && isSolidBlock(world, hitPos.east())) return true;
-            } else {
-                if (fracZ <= SEAM_THRESHOLD && isSolidBlock(world, hitPos.north())) return true;
-                if (fracZ >= (1.0 - SEAM_THRESHOLD) && isSolidBlock(world, hitPos.south())) return true;
-            }
-
-            // Центр плоской стены без стыка (скриншот 2) — зайти нельзя!
+        // Если бросок в центр вертикальной стены (скриншот 2), но нет застревания в потолке — клип не сработает
+        if (hitSide.getAxis().isHorizontal() && fracY < 0.80D && fracY > 0.20D) {
             return false;
         }
 
-        // 4. Попадание в нижнюю грань потолка (DOWN)
-        if (side == Direction.DOWN) {
-            // Если попадание в потолок вплотную к стене — происходит клип в угол
-            boolean nearWallX = edgeX <= 0.22D && (isSolidBlock(world, hitPos.west()) || isSolidBlock(world, hitPos.east()));
-            boolean nearWallZ = edgeZ <= 0.22D && (isSolidBlock(world, hitPos.north()) || isSolidBlock(world, hitPos.south()));
-            return nearWallX || nearWallZ;
-        }
-
-        // 5. Попадание в пол (UP)
-        if (side == Direction.UP) {
-            // Только если перл кинут ровно в основание вертикальной стены
-            boolean baseWallX = edgeX <= 0.15D && (isSolidBlock(world, hitPos.west()) || isSolidBlock(world, hitPos.east()));
-            boolean baseWallZ = edgeZ <= 0.15D && (isSolidBlock(world, hitPos.north()) || isSolidBlock(world, hitPos.south()));
-            return baseWallX || baseWallZ;
-        }
-
-        return false;
+        // Общее правило: застрял ли игрок в твердых блоках головой/туловищем при нахождении в упор
+        return solidCollisions >= 1;
     }
 
-    private static boolean isSolidBlock(World world, BlockPos pos) {
-        BlockState state = world.getBlockState(pos);
-        return !state.isAir() && state.getFluidState().isEmpty() && (state.isOpaqueFullCube() || state.blocksMovement());
+    private static boolean isSolid(World world, BlockPos pos) {
+        BlockState s = world.getBlockState(pos);
+        return !s.isAir() && s.getFluidState().isEmpty() && s.isOpaqueFullCube();
     }
 }
