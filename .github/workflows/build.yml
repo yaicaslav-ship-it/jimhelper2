@@ -3,9 +3,6 @@ name: Build Fabric Mod
 on:
   push:
     branches: [ "main", "master" ]
-    tags: [ "v*" ]
-  pull_request:
-    branches: [ "main", "master" ]
   workflow_dispatch:
 
 jobs:
@@ -13,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up JDK 21
@@ -27,22 +24,11 @@ jobs:
         with:
           gradle-version: '8.11.1'
 
-      # Сборка именно ремапнутого JAR файла для игры
-      - name: Build Mod with Gradle
+      - name: Build Mod
         run: gradle remapJar --no-daemon
 
-      # Загружаем готовый jar для игры в артефакты
-      - name: Upload Remapped Mod Jar
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: pearl-indicator-jar
-          path: build/libs/pearlindicator-1.0.0.jar
-
-      # Если поставлен Git-тег (например v1.0.0), прикрепляем файл к релизу
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: build/libs/pearlindicator-1.0.0.jar
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: PearlIndicator-1.21.4
+          path: build/libs/*[!sources].jar
