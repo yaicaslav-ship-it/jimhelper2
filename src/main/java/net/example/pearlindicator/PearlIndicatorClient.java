@@ -26,53 +26,78 @@ public class PearlIndicatorClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        LOGGER.info("[PearlIndicator] Мод успешно инициализирован на клиенте!");
+        LOGGER.info("[PearlIndicator] Мод запущен на клиенте 1.21.4!");
 
-        HudRenderCallback.EVENT.register((DrawContext context, RenderTickCounter tickCounter) -> {
+        HudRenderCallback.EVENT.register((DrawContext drawContext, RenderTickCounter tickCounter) -> {
             MinecraftClient client = MinecraftClient.getInstance();
-            if (client.player == null || client.world == null) return;
+            if (client == null || client.player == null || client.world == null) {
+                return;
+            }
 
-            // Проверяем, держит ли игрок жемчуг эндера в руках
-            boolean hasPearl = client.player.getMainHandStack().isOf(Items.ENDER_PEARL) 
-                    || client.player.getOffHandStack().isOf(Items.ENDER_PEARL);
+            // Не рендерим, если открыт инвентарь, меню паузы или чат
+            if (client.currentScreen != null) {
+                return;
+            }
 
-            if (!hasPearl) return;
+            // Проверяем наличие эндер-перла в любой из двух рук
+            boolean mainHand = client.player.getMainHandStack().isOf(Items.ENDER_PEARL);
+            boolean offHand = client.player.getOffHandStack().isOf(Items.ENDER_PEARL);
+
+            if (!mainHand && !offHand) {
+                return;
+            }
 
             boolean hitsEntity = simulatePearl(client);
 
             String message = hitsEntity ? "НЕЛЬЗЯ!" : "МОЖНО!";
-            int color = hitsEntity ? 0xFFFF2222 : 0xFF22FF22; // Яркий красный / зеленый
+            // Яркий красный (0xFFFF2020) или ярко-салатовый (0xFF20FF20)
+            int color = hitsEntity ? 0xFFFF2020 : 0xFF20FF20;
 
+            // В 1.21.4 надежнее всего брать ширину экрана из client.getWindow()
             int screenWidth = client.getWindow().getScaledWidth();
             int screenHeight = client.getWindow().getScaledHeight();
 
             int textWidth = client.textRenderer.getWidth(message);
             int x = (screenWidth - textWidth) / 2;
-            int y = (screenHeight / 2) + 14;
+            int y = (screenHeight / 2) + 12;
 
-            // Отрисовка текста с тенью
-            context.drawTextWithShadow(client.textRenderer, Text.literal(message), x, y, color);
+            // Отрисовка: передаем Text объект и флаг shadow = true
+            drawContext.drawText(
+                client.textRenderer, 
+                Text.literal(message), 
+                x, 
+                y, 
+                color, 
+                true
+            );
         });
     }
 
     private boolean simulatePearl(MinecraftClient client) {
         Entity shooter = client.player;
         World world = client.world;
+        if (shooter == null || world == null) return false;
 
-        Vec3d pos = shooter.getCameraPosVec(1.0F).subtract(0, 0.1, 0);
+        // Позиция броска с учетом глаз игрока
+        Vec3d pos = shooter.getCameraPosVec(1.0F).subtract(0.0, 0.1, 0.0);
 
         float pitch = shooter.getPitch();
         float yaw = shooter.getYaw();
 
-        float f = -MathHelper.sin(yaw * 0.017453292F) * MathHelper.cos(pitch * 0.017453292F);
-        float g = -MathHelper.sin(pitch * 0.017453292F);
-        float h = MathHelper.cos(yaw * 0.017453292F) * MathHelper.cos(pitch * 0.017453292F);
+        float radYaw = yaw * ((float) Math.PI / 180.0F);
+        float radPitch = pitch * ((float) Math.PI / 180.0F);
 
-        Vec3d velocity = new Vec3d(f, g, h).normalize().multiply(1.5D);
+        float xDir = -MathHelper.sin(radYaw) * MathHelper.cos(radPitch);
+        float yDir = -MathHelper.sin(radPitch);
+        float zDir = MathHelper.cos(radYaw) * MathHelper.cos(radPitch);
 
-        for (int i = 0; i < 100; i++) {
+        // Начальная скорость жемчуга края в Minecraft = 1.5
+        Vec3d velocity = new Vec3d(xDir, yDir, zDir).normalize().multiply(1.5D);
+
+        for (int step = 0; step < 120; step++) {
             Vec3d nextPos = pos.add(velocity);
 
+            // Проверка блока на пути луча
             BlockHitResult blockHit = world.raycast(new RaycastContext(
                     pos,
                     nextPos,
@@ -81,28 +106,32 @@ public class PearlIndicatorClient implements ClientModInitializer {
                     shooter
             ));
 
-            Vec3d checkEndPos = (blockHit.getType() != HitResult.Type.MISS) ? blockHit.getPos() : nextPos;
+            Vec3d stepEnd = (blockHit.getType() != HitResult.Type.MISS) ? blockHit.getPos() : nextPos;
 
-            Box box = new Box(pos, checkEndPos).expand(1.0);
+            // Проверка сущностей (хитбоксов) на пути текущего шага
+            Box rayBox = new Box(pos, stepEnd).expand(0.8D);
             EntityHitResult entityHit = ProjectileUtil.raycast(
                     shooter,
                     pos,
-                    checkEndPos,
-                    box,
-                    entity -> !entity.isSpectator() && entity.canHit(),
-                    pos.squaredDistanceTo(checkEndPos)
+                    stepEnd,
+                    rayBox,
+                    entity -> !entity.isSpectator() && entity.canHit() && entity != shooter,
+                    pos.squaredDistanceTo(stepEnd)
             );
 
+            // Если на пути до препятствия стоит моб/игрок
             if (entityHit != null && entityHit.getType() == HitResult.Type.ENTITY) {
                 return true;
             }
 
+            // Если раньше встретился блок — траектория безопасно уперлась в блок
             if (blockHit.getType() != HitResult.Type.MISS) {
                 return false;
             }
 
             pos = nextPos;
-            velocity = velocity.multiply(0.99).subtract(0, 0.03, 0);
+            // Коэффициенты физики жемчуга: трение 0.99, гравитация 0.03 за тик
+            velocity = velocity.multiply(0.99D).subtract(0.0, 0.03D, 0.0);
         }
 
         return false;
