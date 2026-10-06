@@ -6,7 +6,6 @@ import net.minecraft.client.gui.DrawContext;
 import net.minecraft.entity.Entity;
 import net.minecraft.item.Items;
 import net.minecraft.text.Text;
-import net.minecraft.util.Arm;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.Box;
@@ -16,12 +15,11 @@ import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
 
 import java.util.List;
-import java.util.Optional;
 
 public class PearlIndicatorClient implements ClientModInitializer {
 
-    // Радиус жемчуга края (0.25 / 2 = 0.125) + серверная погрешность регистрации
-    private static final double PEARL_COLLISION_RADIUS = 0.18D;
+    // Полный эффективный радиус коллизии перки с учетом хитбокса и серверного буфера
+    private static final double PEARL_RADIUS = 0.32D;
 
     @Override
     public void onInitializeClient() {
@@ -41,7 +39,6 @@ public class PearlIndicatorClient implements ClientModInitializer {
         String message = hitsEntity ? "НЕЛЬЗЯ!" : "МОЖНО!";
         int color = hitsEntity ? 0xFFFF1111 : 0xFF11FF11;
 
-        // Строго по центру экрана под перекрестием прицела
         int screenWidth = client.getWindow().getScaledWidth();
         int screenHeight = client.getWindow().getScaledHeight();
 
@@ -57,6 +54,9 @@ public class PearlIndicatorClient implements ClientModInitializer {
         World world = client.world;
         if (player == null || world == null) return false;
 
+        // Ванильная точка вылета: глаза игрока - 0.1 блока по высоте
+        Vec3d pos = player.getCameraPosVec(1.0F).subtract(0.0, 0.1, 0.0);
+
         float pitch = player.getPitch();
         float yaw = player.getYaw();
 
@@ -67,27 +67,15 @@ public class PearlIndicatorClient implements ClientModInitializer {
         float yDir = -MathHelper.sin(radPitch);
         float zDir = MathHelper.cos(radYaw) * MathHelper.cos(radPitch);
 
-        // Начальный вектор скорости жемчуга (скорость 1.5)
+        // Начальная скорость жемчуга = 1.5 блока за тик
         Vec3d velocity = new Vec3d(xDir, yDir, zDir).normalize().multiply(1.5D);
 
-        // Учитываем руку, из которой кидается перка
-        boolean offHandPearl = !client.player.getMainHandStack().isOf(Items.ENDER_PEARL) 
-                && client.player.getOffHandStack().isOf(Items.ENDER_PEARL);
-        boolean isRightArm = (client.player.getMainArm() == Arm.RIGHT) != offHandPearl;
-        double sideOffset = isRightArm ? 0.1D : -0.1D;
-
-        // Вектор сдвига вбок относительно направления взгляда
-        Vec3d sideVec = new Vec3d(-MathHelper.cos(radYaw), 0, -MathHelper.sin(radYaw)).multiply(sideOffset);
-
-        // Точка вылета из глаз со смещением к руке
-        Vec3d currentPos = player.getCameraPosVec(1.0F).subtract(0.0, 0.1, 0.0).add(sideVec);
-
         for (int step = 0; step < 100; step++) {
-            Vec3d nextPos = currentPos.add(velocity);
+            Vec3d nextPos = pos.add(velocity);
 
-            // 1. Проверяем блок на полном шаге
+            // 1. Проверяем блок на пути
             BlockHitResult blockHit = world.raycast(new RaycastContext(
-                    currentPos,
+                    pos,
                     nextPos,
                     RaycastContext.ShapeType.COLLIDER,
                     RaycastContext.FluidHandling.NONE,
@@ -95,47 +83,61 @@ public class PearlIndicatorClient implements ClientModInitializer {
             ));
 
             boolean hitBlock = (blockHit.getType() != HitResult.Type.MISS);
-            Vec3d blockEnd = hitBlock ? blockHit.getPos() : nextPos;
-            double blockDistSq = hitBlock ? currentPos.squaredDistanceTo(blockEnd) : Double.MAX_VALUE;
+            Vec3d stepEnd = hitBlock ? blockHit.getPos() : nextPos;
+            double blockDistSq = pos.squaredDistanceTo(stepEnd);
 
             // 2. Ищем сущностей вокруг пути снаряда
-            Box searchBox = new Box(currentPos, blockEnd).expand(1.5D);
+            Box searchBox = new Box(pos, stepEnd).expand(2.0D);
             List<Entity> entities = world.getOtherEntities(player, searchBox,
                     e -> !e.isSpectator() && e.canHit() && e.isAlive() && e != player);
 
-            // Дробим отрезок тика на 5 суб-шагов для сверхточного отлова в упор
-            int subSteps = 5;
-            Vec3d subDelta = blockEnd.subtract(currentPos).multiply(1.0D / subSteps);
-            Vec3d subStart = currentPos;
+            for (Entity entity : entities) {
+                // Расширенный хитбокс сущности (включая толщину перки)
+                Box targetBox = entity.getBoundingBox().expand(PEARL_RADIUS);
 
-            for (int sub = 0; sub < subSteps; sub++) {
-                Vec3d subEnd = subStart.add(subDelta);
-
-                for (Entity entity : entities) {
-                    // Хитбокс сущности + размер перки + отступ
-                    Box targetBox = entity.getBoundingBox().expand(PEARL_COLLISION_RADIUS);
-
-                    // Проверяем прямое пересечение суб-отрезка с коробкой
-                    Optional<Vec3d> hitPoint = targetBox.raycast(subStart, subEnd);
-                    if (hitPoint.isPresent() || targetBox.contains(subStart) || targetBox.contains(subEnd)) {
-                        double entityDistSq = currentPos.squaredDistanceTo(subStart);
-                        if (entityDistSq <= blockDistSq) {
-                            return true; // Столкновение с сущностью
-                        }
+                // Дистанция от отрезка движения перки [pos -> stepEnd] до коробки цели
+                if (intersectsOrClose(pos, stepEnd, targetBox)) {
+                    double distToTargetSq = pos.squaredDistanceTo(entity.getEyePos());
+                    // Если сущность ближе, чем стена/блок
+                    if (!hitBlock || distToTargetSq <= blockDistSq + 1.5D) {
+                        return true;
                     }
                 }
-
-                subStart = subEnd;
             }
 
-            // Если попали в блок и сущностей до него не встретили — бросок чистый
+            // Если врезались в блок
             if (hitBlock) {
                 return false;
             }
 
-            // Физика снаряда
-            currentPos = nextPos;
+            pos = nextPos;
             velocity = velocity.multiply(0.99D).subtract(0.0, 0.03D, 0.0);
+        }
+
+        return false;
+    }
+
+    /**
+     * Проверяет, проходит ли отрезок движения перки сквозь или вплотную к хитбоксу
+     */
+    private static boolean intersectsOrClose(Vec3d start, Vec3d end, Box box) {
+        if (box.contains(start) || box.contains(end)) {
+            return true;
+        }
+        if (box.raycast(start, end).isPresent()) {
+            return true;
+        }
+
+        // Проверка промежуточных точек (10 шагов вдоль отрезка за тик)
+        for (int i = 1; i < 10; i++) {
+            double factor = i / 10.0D;
+            double x = start.x + (end.x - start.x) * factor;
+            double y = start.y + (end.y - start.y) * factor;
+            double z = start.z + (end.z - start.z) * factor;
+
+            if (box.contains(x, y, z)) {
+                return true;
+            }
         }
 
         return false;
