@@ -22,24 +22,24 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      # Устанавливаем Gradle нужной версии без необходимости наличия gradlew в репозитории
+      # Устанавливаем Gradle версии 8.11.1, совместимой с Fabric Loom 1.9
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.10.2'
+          gradle-version: '8.11.1'
 
-      # Собираем мод через установленный Gradle
+      # Сборка мода
       - name: Build Mod with Gradle
         run: gradle build --no-daemon
 
-      # Сохраняем собранный .jar файл в артефакты запуска
+      # Сохранение скомпилированного .jar в артефакты
       - name: Upload Mod Jar Artifact
         uses: actions/upload-artifact@v4
         with:
           name: pearl-indicator-jar
           path: build/libs/*.jar
 
-      # Если был пуш тега (например v1.0.0), создаем релиз с .jar файлом
+      # Публикация релиза при пуше тега (например, v1.0.0)
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
