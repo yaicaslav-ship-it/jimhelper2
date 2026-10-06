@@ -19,7 +19,7 @@ import java.util.Optional;
 
 public class PearlIndicatorClient implements ClientModInitializer {
 
-    // Реальный физический радиус эндер-перла в Minecraft (хитбокс снаряда 0.25x0.25)
+    // Реальный физический полуразмер жемчуга края (0.25 / 2 = 0.125)
     private static final double PEARL_RADIUS = 0.125D;
 
     @Override
@@ -55,8 +55,8 @@ public class PearlIndicatorClient implements ClientModInitializer {
         World world = client.world;
         if (player == null || world == null) return false;
 
-        // Ванильная точка вылета жемчуга (глаза игрока с небольшим смещением вниз)
-        Vec3d pos = player.getCameraPosVec(1.0F).subtract(0.0, 0.1, 0.0);
+        // Позиция спавна жемчуга (глаза игрока с ванильным смещением)
+        Vec3d currentPos = player.getCameraPosVec(1.0F).subtract(0.0, 0.1, 0.0);
 
         float pitch = player.getPitch();
         float yaw = player.getYaw();
@@ -68,60 +68,59 @@ public class PearlIndicatorClient implements ClientModInitializer {
         float yDir = -MathHelper.sin(radPitch);
         float zDir = MathHelper.cos(radYaw) * MathHelper.cos(radPitch);
 
+        // Начальная скорость жемчуга = 1.5 блока за тик
         Vec3d velocity = new Vec3d(xDir, yDir, zDir).normalize().multiply(1.5D);
 
         for (int step = 0; step < 120; step++) {
-            Vec3d nextPos = pos.add(velocity);
+            Vec3d nextPos = currentPos.add(velocity);
 
-            // 1. Проверяем блок на пути отрезка
+            // 1. Проверяем попадание в блоки
             BlockHitResult blockHit = world.raycast(new RaycastContext(
-                    pos,
+                    currentPos,
                     nextPos,
                     RaycastContext.ShapeType.COLLIDER,
                     RaycastContext.FluidHandling.NONE,
                     player
             ));
 
-            Vec3d stepEnd = (blockHit.getType() != HitResult.Type.MISS) ? blockHit.getPos() : nextPos;
-            double blockDistanceSq = pos.squaredDistanceTo(stepEnd);
+            boolean hitBlock = (blockHit.getType() != HitResult.Type.MISS);
+            Vec3d segmentEnd = hitBlock ? blockHit.getPos() : nextPos;
+            double blockDistSq = hitBlock ? currentPos.squaredDistanceTo(segmentEnd) : Double.MAX_VALUE;
 
-            // 2. Ищем сущностей вокруг текущего шага
-            Box searchBox = new Box(pos, stepEnd).expand(1.0D);
-            List<Entity> entities = world.getOtherEntities(player, searchBox,
+            // 2. Ищем сущностей вокруг отрезка полета
+            Box stepSearchBox = new Box(currentPos, segmentEnd).expand(1.5D);
+            List<Entity> entities = world.getOtherEntities(player, stepSearchBox,
                     e -> !e.isSpectator() && e.canHit() && e.isAlive() && e != player);
 
             double closestEntityDistSq = Double.MAX_VALUE;
 
             for (Entity entity : entities) {
-                // Точное расширение Минковского: хитбокс сущности + точный радиус перла
-                Box targetBox = entity.getBoundingBox().expand(PEARL_RADIUS);
+                // ВАЖНО: хитбокс сущности + ванильный targeting margin + радиус перла
+                double totalExpansion = PEARL_RADIUS + entity.getTargetingMargin();
+                Box targetBox = entity.getBoundingBox().expand(totalExpansion);
 
-                // Если перка при спавне уже касается/находится внутри хитбокса
-                if (targetBox.contains(pos)) {
-                    return true;
-                }
-
-                // Прямой математический луч через расширенную коробку
-                Optional<Vec3d> hit = targetBox.raycast(pos, stepEnd);
-                if (hit.isPresent()) {
-                    double distSq = pos.squaredDistanceTo(hit.get());
+                // Проверяем попадание луча в объем хитбокса
+                Optional<Vec3d> hitPoint = targetBox.raycast(currentPos, segmentEnd);
+                if (hitPoint.isPresent()) {
+                    double distSq = currentPos.squaredDistanceTo(hitPoint.get());
                     if (distSq < closestEntityDistSq) {
                         closestEntityDistSq = distSq;
                     }
                 }
             }
 
-            // Если задели сущность до того, как перка ударилась в блок
-            if (closestEntityDistSq <= blockDistanceSq) {
+            // 3. Если задели сущность ближе, чем блок — перка гарантированно врежется
+            if (closestEntityDistSq <= blockDistSq) {
                 return true;
             }
 
-            // Если встретился блок и сущностей на пути не было — бросок чистый
-            if (blockHit.getType() != HitResult.Type.MISS) {
+            // Если перка ударилась в блок и никого не задела — бросок успешен
+            if (hitBlock) {
                 return false;
             }
 
-            pos = nextPos;
+            // Физика снаряда
+            currentPos = nextPos;
             velocity = velocity.multiply(0.99D).subtract(0.0, 0.03D, 0.0);
         }
 
