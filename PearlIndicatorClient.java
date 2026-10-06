@@ -19,6 +19,9 @@ import java.util.Optional;
 
 public class PearlIndicatorClient implements ClientModInitializer {
 
+    // Реальный физический радиус эндер-перла в Minecraft (хитбокс снаряда 0.25x0.25)
+    private static final double PEARL_RADIUS = 0.125D;
+
     @Override
     public void onInitializeClient() {
     }
@@ -35,7 +38,7 @@ public class PearlIndicatorClient implements ClientModInitializer {
         boolean hitsEntity = simulateTrajectory(client);
 
         String message = hitsEntity ? "НЕЛЬЗЯ!" : "МОЖНО!";
-        int color = hitsEntity ? 0xFFFF2222 : 0xFF22FF22;
+        int color = hitsEntity ? 0xFFFF1111 : 0xFF11FF11;
 
         int screenWidth = client.getWindow().getScaledWidth();
         int screenHeight = client.getWindow().getScaledHeight();
@@ -52,26 +55,25 @@ public class PearlIndicatorClient implements ClientModInitializer {
         World world = client.world;
         if (player == null || world == null) return false;
 
-        // Ванильная точка спавна жемчуга
-        Vec3d pos = player.getCameraPosVec(1.0F).subtract(0, 0.1, 0);
+        // Ванильная точка вылета жемчуга (глаза игрока с небольшим смещением вниз)
+        Vec3d pos = player.getCameraPosVec(1.0F).subtract(0.0, 0.1, 0.0);
 
         float pitch = player.getPitch();
         float yaw = player.getYaw();
 
-        float xDir = -MathHelper.sin(yaw * 0.017453292F) * MathHelper.cos(pitch * 0.017453292F);
-        float yDir = -MathHelper.sin(pitch * 0.017453292F);
-        float zDir = MathHelper.cos(yaw * 0.017453292F) * MathHelper.cos(pitch * 0.017453292F);
+        float radYaw = yaw * ((float) Math.PI / 180.0F);
+        float radPitch = pitch * ((float) Math.PI / 180.0F);
 
-        // Начальная скорость жемчуга = 1.5
+        float xDir = -MathHelper.sin(radYaw) * MathHelper.cos(radPitch);
+        float yDir = -MathHelper.sin(radPitch);
+        float zDir = MathHelper.cos(radYaw) * MathHelper.cos(radPitch);
+
         Vec3d velocity = new Vec3d(xDir, yDir, zDir).normalize().multiply(1.5D);
 
-        // Размер хитбокса жемчуга (0.25x0.25), радиус расширения = 0.15 - 0.2
-        final double pearlRadius = 0.16D;
-
-        for (int i = 0; i < 120; i++) {
+        for (int step = 0; step < 120; step++) {
             Vec3d nextPos = pos.add(velocity);
 
-            // 1. Проверяем блок по траектории
+            // 1. Проверяем блок на пути отрезка
             BlockHitResult blockHit = world.raycast(new RaycastContext(
                     pos,
                     nextPos,
@@ -80,42 +82,47 @@ public class PearlIndicatorClient implements ClientModInitializer {
                     player
             ));
 
-            Vec3d maxReach = (blockHit.getType() != HitResult.Type.MISS) ? blockHit.getPos() : nextPos;
-            double blockDistSq = pos.squaredDistanceTo(maxReach);
+            Vec3d stepEnd = (blockHit.getType() != HitResult.Type.MISS) ? blockHit.getPos() : nextPos;
+            double blockDistanceSq = pos.squaredDistanceTo(stepEnd);
 
-            // 2. Ищем всех сущностей в области шага
-            Box stepSearchBox = new Box(pos, maxReach).expand(1.5);
-            List<Entity> candidates = world.getOtherEntities(player, stepSearchBox, 
-                    e -> !e.isSpectator() && e.canHit() && e.isAlive());
+            // 2. Ищем сущностей вокруг текущего шага
+            Box searchBox = new Box(pos, stepEnd).expand(1.0D);
+            List<Entity> entities = world.getOtherEntities(player, searchBox,
+                    e -> !e.isSpectator() && e.canHit() && e.isAlive() && e != player);
 
-            for (Entity entity : candidates) {
-                // Расширяем хитбокс сущности на радиус жемчуга + отступ взаимодействия
-                Box targetBox = entity.getBoundingBox().expand(entity.getTargetingMargin() + pearlRadius);
+            double closestEntityDistSq = Double.MAX_VALUE;
 
-                // Проверяем прямое пересечение отрезка полета с объемом хитбокса
-                Optional<Vec3d> hitPoint = targetBox.raycast(pos, maxReach);
-                if (hitPoint.isPresent()) {
-                    double entityDistSq = pos.squaredDistanceTo(hitPoint.get());
-                    // Если задели хитбокс до того, как врезались в блок
-                    if (entityDistSq <= blockDistSq) {
-                        return true;
-                    }
-                }
+            for (Entity entity : entities) {
+                // Точное расширение Минковского: хитбокс сущности + точный радиус перла
+                Box targetBox = entity.getBoundingBox().expand(PEARL_RADIUS);
 
-                // Дополнительная проверка на случай, если точка спавна перки уже внутри границы
+                // Если перка при спавне уже касается/находится внутри хитбокса
                 if (targetBox.contains(pos)) {
                     return true;
                 }
+
+                // Прямой математический луч через расширенную коробку
+                Optional<Vec3d> hit = targetBox.raycast(pos, stepEnd);
+                if (hit.isPresent()) {
+                    double distSq = pos.squaredDistanceTo(hit.get());
+                    if (distSq < closestEntityDistSq) {
+                        closestEntityDistSq = distSq;
+                    }
+                }
             }
 
-            // Если попали в блок и сущностей на пути не было
+            // Если задели сущность до того, как перка ударилась в блок
+            if (closestEntityDistSq <= blockDistanceSq) {
+                return true;
+            }
+
+            // Если встретился блок и сущностей на пути не было — бросок чистый
             if (blockHit.getType() != HitResult.Type.MISS) {
                 return false;
             }
 
             pos = nextPos;
-            // Физика снаряда
-            velocity = velocity.multiply(0.99).subtract(0, 0.03, 0);
+            velocity = velocity.multiply(0.99D).subtract(0.0, 0.03D, 0.0);
         }
 
         return false;
