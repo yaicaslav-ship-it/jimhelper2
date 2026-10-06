@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "id": "pearlindicator",
+  "version": "1.0.0",
+  "name": "Pearl Indicator",
+  "description": "Индикатор броска жемчуга",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "net.example.pearlindicator.PearlIndicatorClient"
+    ]
+  },
+  "mixins": [
+    "pearlindicator.client.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.0",
+    "minecraft": "~1.21.4",
+    "java": ">=21"
+  }
+}
