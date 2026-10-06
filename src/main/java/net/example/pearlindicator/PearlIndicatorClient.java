@@ -15,13 +15,12 @@ import net.minecraft.world.RaycastContext;
 import net.minecraft.world.World;
 
 import java.util.List;
+import java.util.Optional;
 
 public class PearlIndicatorClient implements ClientModInitializer {
 
-    // Физический размер хитбокса перки (0.25) + безопасный отступ для сетевого пинга и рассинхрона
-    private static final double PEARL_SIZE = 0.25D;
-    private static final double PEARL_HALF = PEARL_SIZE / 2.0D;
-    private static final double HITBOX_SAFETY_MARGIN = 0.22D; // Гарантирует отлов касаний по краю плеча
+    // Реальный полуразмер хитбокса жемчуга края (0.25 / 2 = 0.125)
+    private static final double PEARL_RADIUS = 0.125D;
 
     @Override
     public void onInitializeClient() {
@@ -56,8 +55,8 @@ public class PearlIndicatorClient implements ClientModInitializer {
         World world = client.world;
         if (player == null || world == null) return false;
 
-        // Позиция спавна перки в ванилле
-        Vec3d pos = player.getCameraPosVec(1.0F).subtract(0.0, 0.1, 0.0);
+        // Позиция броска (глаза игрока с ванильным смещением вниз)
+        Vec3d currentPos = player.getCameraPosVec(1.0F).subtract(0.0, 0.1, 0.0);
 
         float pitch = player.getPitch();
         float yaw = player.getYaw();
@@ -72,57 +71,68 @@ public class PearlIndicatorClient implements ClientModInitializer {
         // Начальная скорость жемчуга = 1.5 блока за тик
         Vec3d velocity = new Vec3d(xDir, yDir, zDir).normalize().multiply(1.5D);
 
+        // Имитируем до 120 тиков (6 секунд полета)
         for (int step = 0; step < 120; step++) {
-            Vec3d nextPos = pos.add(velocity);
+            Vec3d nextPos = currentPos.add(velocity);
 
-            // 1. Проверяем препятствие (блок) на пути
+            // 1. Проверяем попадание в блоки
             BlockHitResult blockHit = world.raycast(new RaycastContext(
-                    pos,
+                    currentPos,
                     nextPos,
                     RaycastContext.ShapeType.COLLIDER,
                     RaycastContext.FluidHandling.NONE,
                     player
             ));
 
-            Vec3d actualEnd = (blockHit.getType() != HitResult.Type.MISS) ? blockHit.getPos() : nextPos;
-            double blockDistanceSq = pos.squaredDistanceTo(actualEnd);
+            // Точка конца отрезка: либо блок, либо конец шага
+            boolean hitBlock = (blockHit.getType() != HitResult.Type.MISS);
+            Vec3d segmentEnd = hitBlock ? blockHit.getPos() : nextPos;
 
-            // 2. Формируем объёмный коридор полета перки (Swept Box) с учетом её физического размера
-            Box flightPathBox = new Box(
-                    Math.min(pos.x, actualEnd.x) - PEARL_HALF,
-                    Math.min(pos.y, actualEnd.y) - PEARL_HALF,
-                    Math.min(pos.z, actualEnd.z) - PEARL_HALF,
-                    Math.max(pos.x, actualEnd.x) + PEARL_HALF,
-                    Math.max(pos.y, actualEnd.y) + PEARL_HALF,
-                    Math.max(pos.z, actualEnd.z) + PEARL_HALF
-            ).expand(0.5);
-
-            List<Entity> nearbyEntities = world.getOtherEntities(player, flightPathBox,
+            // 2. Ищем сущностей вокруг текущего шага
+            Box stepSearchBox = new Box(currentPos, segmentEnd).expand(0.5D);
+            List<Entity> entities = world.getOtherEntities(player, stepSearchBox,
                     e -> !e.isSpectator() && e.canHit() && e.isAlive() && e != player);
 
-            for (Entity entity : nearbyEntities) {
-                // Расширяем хитбокс сущности на размер перки + запас на пинг/движение
-                Box entityTargetBox = entity.getBoundingBox().expand(
-                        PEARL_HALF + HITBOX_SAFETY_MARGIN + entity.getTargetingMargin()
-                );
+            Entity closestEntity = null;
+            double closestDistanceSq = Double.MAX_VALUE;
 
-                // Если луч или сама коробка перки пересекает хитбокс
-                if (entityTargetBox.raycast(pos, actualEnd).isPresent() || entityTargetBox.intersects(flightPathBox)) {
-                    // Проверяем, что сущность находится ближе, чем точка удара о блок
-                    double distToEntity = pos.squaredDistanceTo(entity.getPos());
-                    if (distToEntity <= blockDistanceSq + 2.0D) {
-                        return true;
+            for (Entity entity : entities) {
+                // Точный хитбокс сущности с расширением на радиус жемчуга
+                Box targetBox = entity.getBoundingBox().expand(PEARL_RADIUS);
+
+                // Ищем пересечение именно луча полета с хитбоксом
+                Optional<Vec3d> hitPoint = targetBox.raycast(currentPos, segmentEnd);
+                if (hitPoint.isPresent()) {
+                    double distSq = currentPos.squaredDistanceTo(hitPoint.get());
+                    if (distSq < closestDistanceSq) {
+                        closestDistanceSq = distSq;
+                        closestEntity = entity;
                     }
                 }
             }
 
-            // Если врезались в блок раньше сущности — дальше лететь некуда, бросок успешен
-            if (blockHit.getType() != HitResult.Type.MISS) {
+            // 3. Анализируем результат шага
+            if (closestEntity != null) {
+                // Если задели сущность, проверяем, не перекрыл ли ее блок раньше
+                if (!hitBlock) {
+                    return true; // Блока не было, перка попала прямо в сущность
+                } else {
+                    double blockDistSq = currentPos.squaredDistanceTo(blockHit.getPos());
+                    if (closestDistanceSq < blockDistSq) {
+                        return true; // Сущность стояла ближе блока
+                    } else {
+                        return false; // Блок оказался впереди сущности и принял удар
+                    }
+                }
+            }
+
+            // Если попали в блок и сущностей на пути не было — бросок заблокирован стеной/полом
+            if (hitBlock) {
                 return false;
             }
 
-            pos = nextPos;
-            // Ванильная физика жемчуга: сопротивление воздуха 0.99, падение 0.03/тик
+            // Применяем стандартную физику жемчуга
+            currentPos = nextPos;
             velocity = velocity.multiply(0.99D).subtract(0.0, 0.03D, 0.0);
         }
 
