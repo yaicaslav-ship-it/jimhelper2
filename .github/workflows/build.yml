@@ -22,28 +22,27 @@ jobs:
           java-version: '21'
           distribution: 'temurin'
 
-      # Устанавливаем Gradle версии 8.11.1, совместимой с Fabric Loom 1.9
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.11.1'
 
-      # Сборка мода
+      # Сборка именно ремапнутого JAR файла для игры
       - name: Build Mod with Gradle
-        run: gradle build --no-daemon
+        run: gradle remapJar --no-daemon
 
-      # Сохранение скомпилированного .jar в артефакты
-      - name: Upload Mod Jar Artifact
+      # Загружаем готовый jar для игры в артефакты
+      - name: Upload Remapped Mod Jar
         uses: actions/upload-artifact@v4
         with:
           name: pearl-indicator-jar
-          path: build/libs/*.jar
+          path: build/libs/pearlindicator-1.0.0.jar
 
-      # Публикация релиза при пуше тега (например, v1.0.0)
+      # Если поставлен Git-тег (например v1.0.0), прикрепляем файл к релизу
       - name: Create Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/libs/*.jar
+          files: build/libs/pearlindicator-1.0.0.jar
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
